@@ -1,39 +1,32 @@
-import { v4 as uuidv4 } from 'uuid';
 import sha1 from 'sha1';
 import dbClient from '../utils/db';
 import redisClient from '../utils/redis';
 
-class AuthController {
-  static async getConnect(req, res) {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Basic ')) {
-      return res.status(401).json({ error: 'Unauthorized' });
+class UsersController {
+  static async postNew(req, res) {
+    const { email, password } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Missing email' });
+    }
+    if (!password) {
+      return res.status(400).json({ error: 'Missing password' });
     }
 
-    const base64Credentials = authHeader.split(' ')[1];
-    const credentials = Buffer.from(base64Credentials, 'base64').toString('ascii');
-    const [email, password] = credentials.split(':');
+    const users = dbClient.db.collection('users');
+    const user = await users.findOne({ email });
 
-    if (!email || !password) {
-      return res.status(401).json({ error: 'Unauthorized' });
+    if (user) {
+      return res.status(400).json({ error: 'Already exist' });
     }
 
     const hashedPassword = sha1(password);
-    const users = dbClient.db.collection('users');
-    const user = await users.findOne({ email, password: hashedPassword });
+    const newUser = await users.insertOne({ email, password: hashedPassword });
 
-    if (!user) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-
-    const token = uuidv4();
-    const key = `auth_${token}`;
-    await redisClient.set(key, user._id.toString(), 86400);
-
-    return res.status(200).json({ token });
+    return res.status(201).json({ id: newUser.insertedId, email });
   }
 
-  static async getDisconnect(req, res) {
+  static async getMe(req, res) {
     const token = req.headers['x-token'];
     if (!token) {
       return res.status(401).json({ error: 'Unauthorized' });
@@ -45,9 +38,14 @@ class AuthController {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    await redisClient.del(key);
-    return res.status(204).send();
+    const users = dbClient.db.collection('users');
+    const user = await users.findOne({ _id: userId });
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    return res.status(200).json({ id: user._id, email: user.email });
   }
 }
 
-export default AuthController;
+export default UsersController;
