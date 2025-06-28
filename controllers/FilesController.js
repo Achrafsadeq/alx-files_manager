@@ -1,11 +1,11 @@
+import { ObjectId } from 'mongodb';
+import Queue from 'bull';
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import path from 'path';
 import mime from 'mime-types';
 import dbClient from '../utils/db';
 import redisClient from '../utils/redis';
-import { ObjectId } from 'mongodb';
-import Queue from 'bull';
 
 const fileQueue = new Queue('fileQueue');
 
@@ -22,21 +22,33 @@ class FilesController {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    const { name, type, parentId = 0, isPublic = false, data } = req.body;
+    const {
+      name, type, parentId = 0, isPublic = false, data,
+    } = req.body;
 
     if (!name) {
       return res.status(400).json({ error: 'Missing name' });
     }
+
     if (!type || !['folder', 'file', 'image'].includes(type)) {
       return res.status(400).json({ error: 'Missing type' });
     }
+
     if (type !== 'folder' && !data) {
       return res.status(400).json({ error: 'Missing data' });
     }
 
+    const files = dbClient.db.collection('files');
+    let parentObjectId = 0;
+
     if (parentId !== 0) {
-      const files = dbClient.db.collection('files');
-      const parentFile = await files.findOne({ _id: ObjectId(parentId) });
+      try {
+        parentObjectId = ObjectId(parentId);
+      } catch (err) {
+        return res.status(400).json({ error: 'Parent not found' });
+      }
+
+      const parentFile = await files.findOne({ _id: parentObjectId });
       if (!parentFile) {
         return res.status(400).json({ error: 'Parent not found' });
       }
@@ -45,13 +57,12 @@ class FilesController {
       }
     }
 
-    const files = dbClient.db.collection('files');
     const newFile = {
       userId: ObjectId(userId),
       name,
       type,
       isPublic,
-      parentId: parentId === 0 ? parentId : ObjectId(parentId),
+      parentId: parentId === 0 ? 0 : parentObjectId,
     };
 
     if (type === 'folder') {
@@ -108,10 +119,16 @@ class FilesController {
 
     const { id } = req.params;
     const files = dbClient.db.collection('files');
-    const file = await files.findOne({
-      _id: ObjectId(id),
-      userId: ObjectId(userId),
-    });
+    let file;
+
+    try {
+      file = await files.findOne({
+        _id: ObjectId(id),
+        userId: ObjectId(userId),
+      });
+    } catch (err) {
+      return res.status(404).json({ error: 'Not found' });
+    }
 
     if (!file) {
       return res.status(404).json({ error: 'Not found' });
@@ -142,11 +159,11 @@ class FilesController {
     const { parentId = 0, page = 0 } = req.query;
     const limit = 20;
     const skip = page * limit;
-
     const files = dbClient.db.collection('files');
+
     const query = {
       userId: ObjectId(userId),
-      parentId: parentId === 0 ? parentId : ObjectId(parentId),
+      parentId: parentId === 0 ? 0 : ObjectId(parentId),
     };
 
     const result = await files.aggregate([
@@ -184,7 +201,7 @@ class FilesController {
     const file = await files.findOneAndUpdate(
       { _id: ObjectId(id), userId: ObjectId(userId) },
       { $set: { isPublic: true } },
-      { returnOriginal: false },
+      { returnDocument: 'after' },
     );
 
     if (!file.value) {
@@ -218,7 +235,7 @@ class FilesController {
     const file = await files.findOneAndUpdate(
       { _id: ObjectId(id), userId: ObjectId(userId) },
       { $set: { isPublic: false } },
-      { returnOriginal: false },
+      { returnDocument: 'after' },
     );
 
     if (!file.value) {
@@ -239,7 +256,13 @@ class FilesController {
     const { id } = req.params;
     const { size } = req.query;
     const files = dbClient.db.collection('files');
-    const file = await files.findOne({ _id: ObjectId(id) });
+    let file;
+
+    try {
+      file = await files.findOne({ _id: ObjectId(id) });
+    } catch (err) {
+      return res.status(404).json({ error: 'Not found' });
+    }
 
     if (!file) {
       return res.status(404).json({ error: 'Not found' });
@@ -271,7 +294,7 @@ class FilesController {
       return res.status(404).json({ error: 'Not found' });
     }
 
-    const mimeType = mime.lookup(file.name);
+    const mimeType = mime.lookup(file.name) || 'application/octet-stream';
     res.setHeader('Content-Type', mimeType);
     return res.status(200).sendFile(filePath);
   }
